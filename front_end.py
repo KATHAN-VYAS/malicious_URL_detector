@@ -11,6 +11,7 @@ from urllib.parse import urlparse, parse_qs
 from collections import Counter
 from Levenshtein import distance as levenshtein
 
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # UI setup
@@ -19,14 +20,18 @@ st.title("🔒 Malicious URL Detection")
 st.write("Paste a URL to check if it's **Safe** or **Malicious**")
 
 url_input = st.text_input("Enter a URL:")
+src_input = st.text_input("Enter source for URL:")
+
 
 # Load model
 @st.cache_resource
 def load_artifacts():
     model = load_model(r"E:\New folder\project2\malicious_url_detector.h5")
+    #print(model.summary())
     return model
 
 model = load_artifacts()
+
 
 # Feature extraction functions
 def hamming_bit_patterns(url):
@@ -61,6 +66,36 @@ def ngram_entropy(url, n=2):
 # Prediction
 trusted_tlds = ['com', 'org', 'net', 'int', 'edu', 'gov', 'mil']
 trusted_domains = ['amazon.com', 'google.com', 'youtube.com', 'facebook.com', 'twitter.com']
+import re
+
+def url_has_login(url):
+    return int('login' in url.lower())
+
+
+    
+def url_has_client(url):
+    return int('client' in url.lower())
+
+def url_has_server(url):
+    return int('server' in url.lower())
+
+def url_has_admin(url):
+    return int('admin' in url.lower())
+
+def url_has_ip(url):
+    # IP address in the domain (e.g., http://192.168.1.1/login)
+    match = re.search(r'((\d{1,3}\.){3}\d{1,3})', url)
+    return int(bool(match))
+
+def url_isshorted(url):
+    shorteners = [
+        'bit.ly', 'goo.gl', 'tinyurl.com', 'ow.ly', 'is.gd', 'buff.ly',
+        'adf.ly', 'bit.do', 't.co', 'cutt.ly', 'shorturl.at'
+    ]
+    for shortener in shorteners:
+        if shortener in url.lower():
+            return 1
+    return 0
 
 
 def url_count_sensitive_words(url):
@@ -92,7 +127,7 @@ def subdomain_count_dot(url):
     return ext.subdomain.count('.') if ext.subdomain else 0
   
 # Feature extraction function
-def extract_features(url):
+def extract_features(url, source):
     parsed = urlparse(url)
     path = parsed.path
     query = parsed.query
@@ -107,6 +142,14 @@ def extract_features(url):
     url_count_sensitive_financial_words = len([pattern for pattern in [r'login', r'secure', r'account', r'bank', r'payment', r'credit', r'debit', r'finance', r'investment', r'insurance'] if re.search(pattern, url_lower)])
 
     features = {
+        'url': url,
+        'source': source,  # define this if needed
+        'url_has_login': url_has_login(url),
+        'url_has_client': url_has_client(url),
+        'url_has_server': url_has_server(url),
+        'url_has_admin': url_has_admin(url),
+        'url_has_ip': url_has_ip(url),
+        'url_isshorted': url_isshorted(url),
         'url_len': len(url),
         'url_entropy': len(set(url)) / len(url) if len(url) > 0 else 0,
         'url_hamming_1': hamming_1,
@@ -153,34 +196,58 @@ def extract_features(url):
         'pdomain_count_non_alphanum': sum(1 for c in parsed.netloc if not c.isalnum()),
         'pdomain_count_digit': sum(c.isdigit() for c in parsed.netloc),
         'tld_len': len(tld),
-        'tld_is_sus': tld_is_sus(url, []),  # Replace [] with your trusted TLDs list
+        'tld': tld,
+        'tld_is_sus': tld_is_sus(url, [
+    'com', 'org', 'net', 'edu', 'gov', 'mil', 'int',
+    'in', 'uk', 'us', 'ca', 'de', 'fr', 'au', 'jp', 'nz',
+    'ch', 'it', 'es', 'nl', 'se', 'no', 'fi', 'br', 'cn',
+    'kr', 'ru', 'za', 'ae', 'ie', 'sg', 'hk', 'my', 'id',
+    'ph', 'pl', 'be', 'at', 'cz', 'dk', 'gr', 'pt', 'mx',
+    'tr', 'sa', 'ar', 'co', 'th', 'vn', 'tw', 'il'
+]),
+        'pdomain_min_distance':pdomain_min_distance(url, trusted_domains),
         'subdomain_len': subdomain_len(url),
         'subdomain_count_dot': subdomain_count_dot(url)
     }
     # Convert the features dictionary to a DataFrame
     features_df = pd.DataFrame([features])
-
-    # Pad or truncate the DataFrame to ensure it has exactly 56 columns
-    if features_df.shape[1] < 56:
-        # Pad with zeros if the DataFrame has fewer than 56 columns
-        for i in range(56 - features_df.shape[1]):
-            features_df[f'padding_{i}'] = 0.0  # Padding with float values
-    elif features_df.shape[1] > 56:
-        # Truncate if the DataFrame has more than 56 columns
-        features_df = features_df.iloc[:, :56]
+     # Convert the features dictionary to a DataFrame
+    features_df = pd.DataFrame([features])
+    
+    # Remove non-numeric columns for prediction
+    numeric_features = features_df.drop(['url', 'source', 'tld'], axis=1, errors='ignore')
+    
+    # Ensure all values are numeric
+    numeric_features = numeric_features.apply(pd.to_numeric, errors='coerce').fillna(0)
+    
+    print(features_df)  # Keep this for debugging
+    
+    return numeric_features
+    # # Pad or truncate the DataFrame to ensure it has exactly 56 columns
+    # if features_df.shape[1] < 59:
+    #     # Pad with zeros if the DataFrame has fewer than 56 columns
+    #     for i in range(59 - features_df.shape[1]):
+    #         features_df[f'padding_{i}'] = 0.0  # Padding with float values
+    # elif features_df.shape[1] > 59:
+    #     # Truncate if the DataFrame has more than 56 columns
+    #     features_df = features_df.iloc[:, :59]
 
     # Ensure all values are numeric
-    features_df = features_df.apply(pd.to_numeric, errors='coerce').fillna(0)
+    # features_df = features_df.apply(pd.to_numeric, errors='coerce').fillna(0)
+    
+    # print(features_df)
 
-    return features_df
-
-
-if url_input:
+if url_input and src_input:
     try:
-        features = extract_features(url_input)
+        features = extract_features(url_input, src_input)
+        print("Extracted Features:")
+        print(features)  # ← Add this
+        print(features.shape)  # ← Verify shape matches model input
+        
         pred = model.predict(features)[0][0]
-        print(pred)
-        if pred > 0.5:
+        print("\nRaw Prediction Value:", pred)  # ← Add this
+        
+        if pred ==1:
             st.error("🚨 This URL is **Malicious**")
         else:
             st.success("✅ This URL is **Safe**")
